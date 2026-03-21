@@ -1,9 +1,10 @@
 system:
   log_level: "INFO"
-  webhook_port: 8080
+  webhook_port: 8000
   shutdown_on_complete: true
   shutdown_delay_seconds: 60
-  shutdown_timeout_hours: 1.0
+  shutdown_timeout_hours: 2.0
+  poll_interval_hours: 2.0    # 轮询间隔（小时），测试时可改小，如 0.0028 ≈ 10秒
   server_chan_key: ""          # Server酱 SendKey，留空则不推送
 
 tasks:

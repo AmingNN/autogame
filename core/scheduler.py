@@ -6,9 +6,7 @@ import platform
 import sys
 from datetime import datetime, timezone
 from core.common import Config
-from core.logger import mlog
-
-POLL_INTERVAL = 300  # 每 5 分钟检查一次
+from core.logger import mlog, report, time_wrapper
 
 
 class Scheduler:
@@ -192,13 +190,14 @@ class Scheduler:
                 ).total_seconds() / 3600
                 if elapsed_hours >= self.config.system.shutdown_timeout_hours:
                     pending = [k for k, v in self._session_done.items() if not v]
-                    mlog.error(
-                        f"超时保护触发（已运行 {elapsed_hours:.1f}h），"
-                        f"仍未完成: {pending}"
+                    report(
+                        f"{time_wrapper('监控超时，为安全起见准备关机')} "
+                        f"未完成: {pending}"
                     )
                     self._trigger_shutdown()
 
             for task_name in self.config.tasks:
                 await self.run_task(task_name)
 
-            await asyncio.sleep(POLL_INTERVAL)
+            interval_seconds = self.config.system.poll_interval_hours * 3600
+            await asyncio.sleep(interval_seconds)

@@ -58,28 +58,31 @@ def init_app_logging() -> logging.Logger:
 
 mlog: logging.Logger = init_app_logging()
 
+# ── 推送报告收集器 ─────────────────────────────────────────────────────────────
+# 只收集有业务含义的格式化内容（签到结果、MAA 日志、超时提示等）
+_report: list[str] = []
 
-def time_wrapper(message: str) -> str:
-    timestamp = datetime.now().strftime("[%H:%M:%S] ")
-    return f"{timestamp}{message}"
 
+def report(content: str) -> None:
+    """写入系统日志，同时追加到本次会话的推送报告中。"""
+    mlog.info(content)
+    _report.append(content)
+
+
+# ── 格式工具 ───────────────────────────────────────────────────────────────────
 
 def log_wrapper(content: str, title: str | None = None) -> str:
+    """生成带标题分隔线的纯文本段落，对应 Server酱推送样式。"""
     frt = "-" * 10
-    title = title if title else frt
-    return (
-        f"```text\n"
-        f"{frt}{title}{frt}\n"
-        f"{content.strip()}\n"
-        f"{frt}{frt}{frt}\n"
-        f"```\n"
-    )
+    header = f"{frt}{title}{frt}" if title else frt * 3
+    footer = frt * 3
+    return f"{header}\n{content.strip()}\n{footer}"
 
 
 def push_wechat(send_key: str) -> None:
-    """将当日日志文件内容推送到 Server 酱。"""
-    if not log_file.exists():
-        mlog.warning("日志文件不存在，跳过推送")
+    """将本次会话收集到的任务报告推送到 Server 酱。"""
+    if not _report:
+        mlog.warning("推送内容为空，跳过")
         return
     with open(log_file, mode="r", encoding="utf-8") as f:
         content = f.read()
@@ -91,6 +94,3 @@ def push_wechat(send_key: str) -> None:
         mlog.info("Server 酱推送成功")
     except Exception as e:
         mlog.error(f"Server 酱推送失败: {e}")
-
-if __name__ == '__main__':
-    mlog.info("脚本正式开始执行...")
