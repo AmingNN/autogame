@@ -88,14 +88,20 @@ class Scheduler:
         if skipped:
             mlog.info(f"冷却中（跳过）: {skipped}")
 
-    def mark_done(self, task_name: str) -> None:
-        """由 webhook 回调或 run() 自报完成时调用。"""
+    def mark_done(self, task_name: str, success: bool = True) -> None:
+        """由 webhook 回调或 run() 完成时调用。
+        success=False 时仅解除阻塞（如异常），不记录冷却时间。
+        """
         if task_name not in self._session_done:
             mlog.warning(f"[{task_name}] mark_done 被调用，但该任务不在本次会话中")
             return
         if not self._session_done[task_name]:
             self._session_done[task_name] = True
-            mlog.info(f"[{task_name}] ✓ 已完成")
+            if success:
+                self._record_run(task_name)
+                mlog.info(f"[{task_name}] ✓ 已完成")
+            else:
+                mlog.warning(f"[{task_name}] 执行失败，已解除阻塞（不记录冷却）")
         self._log_progress()
         self._check_shutdown()
 
@@ -176,12 +182,12 @@ class Scheduler:
             # webhook_notify=False 的任务在这里直接标记完成
             task_cfg = self.config.tasks[task_name]
             if not task_cfg.webhook_notify:
-                self.mark_done(task_name)
+                self.mark_done(task_name, success=True)
             return True
         except Exception as e:
             mlog.error(f"[{task_name}] 执行失败: {e}", exc_info=True)
-            # 失败也标记完成，避免永久阻塞关机
-            self.mark_done(task_name)
+            # 失败时解除阻塞，但不记录冷却（下次启动仍会重试）
+            self.mark_done(task_name, success=False)
             return False
 
     # ── 轮询循环 ────────────────────────────────────────────────────────────

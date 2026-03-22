@@ -10,15 +10,15 @@ system:
 tasks:
   skyland_sign:
     enabled: true
-    interval_hours: 10       # 10小时内已运行则跳过
+    interval_hours: 20       # 20小时内已运行则跳过
     webhook_notify: false     # run() 结束后完成
 
   maa:
     enabled: true
-    interval_hours: 1
+    interval_hours: 10
     webhook_notify: true     # 由 MAA 程序 POST /maa 通知完成
 
   maaend:
     enabled: true
-    interval_hours: 1
+    interval_hours: 10
     webhook_notify: true     # 由终末地程序 GET /maa 通知完成
