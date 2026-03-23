@@ -25,6 +25,6 @@ tasks:
   maaend:
     enabled: true
     interval_hours: 10
-    entry: "maaend.client.run"           # 启动 MAAEnd.exe
+    entry: "maaend.run"           # 启动 MAAEnd.exe
     start_on: "entry"
     done_on: "webhook"                   # GET /maa 回调后完成

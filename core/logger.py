@@ -47,6 +47,8 @@ LOGGING_CONFIG = {
         "httpcore": {"level": "WARNING", "handlers": [], "propagate": False},
         "httpx": {"level": "WARNING", "handlers": [], "propagate": False},
         "requests": {"level": "WARNING", "handlers": [], "propagate": False},
+        # 项目内部子模块 logger：跟随 AutoGame，输出到控制台 + 文件
+        "skyland": {"handlers": ["console", "file"], "level": "DEBUG", "propagate": False},
         # 根 logger：静默（警告以上才写文件，不打印控制台）
         "": {
             "handlers": ["file"],
