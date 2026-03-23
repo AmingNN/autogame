@@ -6,6 +6,8 @@ import os
 import platform
 import sys
 from datetime import datetime, timezone
+from typing import Callable
+
 from core.common import Config
 from core.logger import mlog
 from core.notify import report
@@ -14,13 +16,9 @@ from core.notify import report
 class Scheduler:
     def __init__(self, config: Config) -> None:
         self.config = config
-        # 冷却记录：{task_name: ISO 8601 str}，持久化
         self._state: dict[str, str] = {}
         self._load_state()
 
-        # 本次会话完成标记：
-        #   需要运行 → False（等待完成）
-        #   不需运行（冷却未到）→ True（视为已完成，不阻塞关机）
         self._session_done: dict[str, bool] = {
             name: not self._should_run_raw(name)
             for name, cfg in config.tasks.items()
@@ -28,9 +26,11 @@ class Scheduler:
         }
         self._shutdown_triggered = False
         self._start_time = datetime.now(tz=timezone.utc)
+        # 每个任务的开始时间，用于 webhook 回调时计算耗时
+        self._task_start_times: dict[str, datetime] = {}
         self._log_initial_status()
 
-    # ── 持久化（冷却时间） ────────────────────────────────────────────────────
+    # ── 持久化 ────────────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
         path = self.config.db_path
@@ -53,7 +53,6 @@ class Scheduler:
     # ── 冷却校验 ────────────────────────────────────────────────────────────
 
     def _should_run_raw(self, task_name: str) -> bool:
-        """仅检查冷却，不校验 enabled。供初始化时调用。"""
         task_cfg = self.config.tasks.get(task_name)
         if not task_cfg:
             return False
@@ -79,7 +78,7 @@ class Scheduler:
         self._state[task_name] = datetime.now(tz=timezone.utc).isoformat()
         self._save_state()
 
-    # ── 会话完成状态 ─────────────────────────────────────────────────────────
+    # ── 会话状态 ─────────────────────────────────────────────────────────────
 
     def _log_initial_status(self) -> None:
         pending = [k for k, v in self._session_done.items() if not v]
@@ -89,8 +88,8 @@ class Scheduler:
             mlog.info(f"冷却中（跳过）: {skipped}")
 
     def mark_done(self, task_name: str, success: bool = True) -> None:
-        """由 webhook 回调或 run() 完成时调用。
-        success=False 时仅解除阻塞（如异常），不记录冷却时间。
+        """由 webhook 回调或 entry 函数返回时调用。
+        success=False 时仅解除阻塞，不记录冷却时间（下次仍重试）。
         """
         if task_name not in self._session_done:
             mlog.warning(f"[{task_name}] mark_done 被调用，但该任务不在本次会话中")
@@ -99,9 +98,14 @@ class Scheduler:
             self._session_done[task_name] = True
             if success:
                 self._record_run(task_name)
-                mlog.info(f"[{task_name}] ✓ 已完成")
+                start = self._task_start_times.get(task_name)
+                if start:
+                    elapsed = (datetime.now() - start).total_seconds()
+                    mlog.info(f"<<< [{task_name}] 任务完成，耗时 {elapsed:.1f}s")
+                else:
+                    mlog.info(f"<<< [{task_name}] 任务完成")
             else:
-                mlog.warning(f"[{task_name}] 执行失败，已解除阻塞（不记录冷却）")
+                mlog.warning(f"<<< [{task_name}] 任务失败，已解除阻塞（不记录冷却）")
         self._log_progress()
         self._check_shutdown()
 
@@ -110,9 +114,7 @@ class Scheduler:
         pending = [k for k, v in self._session_done.items() if not v]
         total = len(self._session_done)
         mlog.info(
-            f"进度 {len(done)}/{total} | "
-            f"已完成: {done} | "
-            f"等待中: {pending}"
+            f"进度 {len(done)}/{total} | 已完成: {done} | 等待中: {pending}"
         )
 
     def _check_shutdown(self) -> None:
@@ -146,47 +148,75 @@ class Scheduler:
         from core.notify import push_wechat
         push_wechat(key)
 
+    # ── 入口函数解析 ──────────────────────────────────────────────────────────
+
+    def _resolve_entry(self, task_name: str) -> Callable | None:
+        """解析 task_cfg.entry 为可调用对象。entry 为空时返回 None。"""
+        task_cfg = self.config.tasks[task_name]
+        if not task_cfg.entry:
+            return None
+
+        parts = task_cfg.entry.rsplit(".", 1)
+        if len(parts) != 2:
+            mlog.error(f"[{task_name}] entry 格式无效（需为 module.function）: {task_cfg.entry}")
+            return None
+
+        module_dotted, func_name = parts
+        module_path = f"tasks.{module_dotted}"
+        try:
+            module = importlib.import_module(module_path)
+        except ModuleNotFoundError as e:
+            mlog.error(f"[{task_name}] 加载模块失败 {module_path}: {e}")
+            return None
+
+        fn = getattr(module, func_name, None)
+        if fn is None:
+            mlog.error(f"[{task_name}] 函数未找到: {func_name} in {module_path}")
+        return fn
+
     # ── 任务执行 ────────────────────────────────────────────────────────────
 
     async def run_task(self, task_name: str, force: bool = False) -> bool:
-        """动态加载 tasks/<task_name>/client.py 并调用 run()。
-        force=True 时跳过冷却校验。
-        """
+        """按配置执行任务。force=True 时跳过冷却校验。"""
         if not force and not self.should_run(task_name):
             mlog.debug(f"[{task_name}] 冷却中，跳过")
             return False
 
-        module_path = f"tasks.{task_name}.client"
-        try:
-            module = importlib.import_module(module_path)
-        except ModuleNotFoundError as e:
-            mlog.error(f"[{task_name}] 找不到模块 {module_path}: {e}")
+        task_cfg = self.config.tasks[task_name]
+        run_fn = self._resolve_entry(task_name)
+
+        if run_fn is None and task_cfg.entry:
+            # entry 指定了但加载失败
+            mlog.error(f"[{task_name}] entry 解析失败，任务中止")
+            self.mark_done(task_name, success=False)
             return False
 
-        run_fn = getattr(module, "run", None)
-        if not run_fn:
-            mlog.error(f"[{task_name}] client.py 未暴露 run() 函数")
-            return False
-
-        mlog.info(f"[{task_name}] 开始执行")
+        # 记录任务开始时间
         start = datetime.now()
+        self._task_start_times[task_name] = start
+        mlog.info(f">>> [{task_name}] 任务开始")
+
+        if run_fn is None:
+            # 无 entry 函数（如 maa），等待 webhook 回调
+            mlog.info(f"    [{task_name}] 无入口函数，等待 webhook 回调完成")
+            return True
+
         try:
             if inspect.iscoroutinefunction(run_fn):
                 await run_fn()
             else:
                 await asyncio.to_thread(run_fn)
-            elapsed = (datetime.now() - start).total_seconds()
-            mlog.info(f"[{task_name}] run() 返回，耗时 {elapsed:.1f}s")
-            self._record_run(task_name)
-            # webhook_notify=True 的任务由 POST /done 或 /maa 等回调标记完成
-            # webhook_notify=False 的任务在这里直接标记完成
-            task_cfg = self.config.tasks[task_name]
-            if not task_cfg.webhook_notify:
+
+            if task_cfg.done_on == "entry":
+                # entry 返回即完成，mark_done 内部会输出结束日志
                 self.mark_done(task_name, success=True)
+            else:
+                elapsed = (datetime.now() - start).total_seconds()
+                mlog.info(f"    [{task_name}] entry 执行完毕 ({elapsed:.1f}s)，等待 webhook 回调")
             return True
         except Exception as e:
-            mlog.error(f"[{task_name}] 执行失败: {e}", exc_info=True)
-            # 失败时解除阻塞，但不记录冷却（下次启动仍会重试）
+            elapsed = (datetime.now() - start).total_seconds()
+            mlog.error(f"<<< [{task_name}] 任务异常（{elapsed:.1f}s）: {e}", exc_info=True)
             self.mark_done(task_name, success=False)
             return False
 
@@ -195,7 +225,6 @@ class Scheduler:
     async def poll_loop(self) -> None:
         mlog.info("Scheduler 轮询已启动，等待任务触发或 Webhook 回调...")
         while True:
-            # 超时保护
             if not self._shutdown_triggered:
                 elapsed_hours = (
                     datetime.now(tz=timezone.utc) - self._start_time

@@ -1,27 +1,34 @@
 # 通知
 import threading
+from datetime import datetime
+from pathlib import Path
 
 import requests
 from core.logger import mlog
+from core.common import cfg
 
 # ── 推送报告收集器 ─────────────────────────────────────────────────────────────
-# 只收集有业务含义的格式化内容（签到结果、MAA 日志、超时提示等）
-# 加锁保证 skyland 线程与 webhook 事件循环同时写入时顺序不乱
 _report: list[str] = []
 _report_lock = threading.Lock()
 
+# notify 专属日志文件（与主日志分开，控制台不显示内容）
+_notify_log: Path = cfg.log_dir / f"notify-{datetime.now().strftime('%Y-%m-%d')}.log"
+
 
 def report(content: str) -> None:
-    """写入系统日志，同时原子追加到本次会话的推送报告中。"""
-    mlog.info(content)
+    """收集报告段：追加到推送列表并写入 notify 日志，主日志仅记录指针。"""
     with _report_lock:
         _report.append(content)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(_notify_log, "a", encoding="utf-8") as f:
+        f.write(f"[{ts}]\n{content}\n\n")
+    mlog.info(f"[notify] 报告已写入 → {_notify_log.name}")
 
 
 # ── 格式工具 ───────────────────────────────────────────────────────────────────
 
 def notify_wrapper(content: str, title: str | None = None) -> str:
-    """给每个任务通知生成带标题分隔线的纯文本段落（日志 / 收集用）。"""
+    """给每个任务通知生成带标题分隔线的纯文本段落。"""
     frt = "=" * 10
     header = f"{frt}{title}{frt}" if title else frt * 3
     footer = frt * 3
@@ -29,7 +36,7 @@ def notify_wrapper(content: str, title: str | None = None) -> str:
 
 
 def _to_code_block(text: str) -> str:
-    """推送前将段落包入代码围栏，避免 Server酱 解析 [] 等 Markdown 语法。"""
+    """推送前包入代码围栏，避免 Server酱 解析 [] 等 Markdown 语法。"""
     return f"```\n{text}\n```"
 
 

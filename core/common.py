@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 import yaml
@@ -10,7 +10,7 @@ class SystemConfig(BaseModel):
     webhook_port: int = 8000
     shutdown_on_complete: bool = True
     shutdown_delay_seconds: int = 60
-    shutdown_timeout_hours: float = 1.0
+    shutdown_timeout_hours: float = 1.5
     poll_interval_hours: float = 2.0
     server_chan_key: str = ""
 
@@ -18,9 +18,26 @@ class SystemConfig(BaseModel):
 class TaskConfig(BaseModel):
     enabled: bool = False
     interval_hours: float = 24.0
-    # True = 任务完成须靠 webhook 回调通知，run() 只是触发动作
-    # False = run() 返回即视为完成
-    webhook_notify: bool = False
+    # tasks/ 内的 module.function 路径，例如 "skyland_sign.skyland.start"
+    # 留空表示无 Python 入口（纯 webhook 驱动任务，如 maa）
+    entry: str = ""
+    # "entry"：entry 函数开始执行时记录任务开始
+    # "run"  ：轮询触发时即记录开始（entry 为空时自动使用此模式）
+    start_on: Literal["entry", "run"] = "entry"
+    # "entry"  ：entry 函数返回即视为完成
+    # "webhook"：等待外部 webhook 回调才算完成
+    done_on: Literal["entry", "webhook"] = "entry"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compat_webhook_notify(cls, data: Any) -> Any:
+        """兼容旧版 webhook_notify 字段。"""
+        if isinstance(data, dict) and "webhook_notify" in data and "done_on" not in data:
+            data = dict(data)
+            data["done_on"] = "webhook" if data.pop("webhook_notify") else "entry"
+        elif isinstance(data, dict):
+            data.pop("webhook_notify", None)
+        return data
 
 
 class Config(BaseModel):

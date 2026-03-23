@@ -28,8 +28,8 @@ cp config.example.yaml config.yaml
 |---|---|
 | `system.webhook_port` | Webhook 监听端口，需与 MAA 等外部程序配置一致 |
 | `system.server_chan_key` | [Server 酱](https://sct.ftqq.com) SendKey，留空则不推送 |
-| `tasks.*.enabled` | 各任务开关 |
-| `tasks.*.interval_hours` | 任务最小触发间隔（小时） |
+| `tasks.*.entry` | 任务入口函数路径（`tasks/` 内的 `module.function`） |
+| `tasks.*.done_on` | 完成判定方式：`entry`（函数返回即完成）或 `webhook`（等待回调） |
 
 ### 3. 配置森空岛 Token
 
@@ -57,15 +57,27 @@ uv run python main.py
 开机自启 → main.py 启动
 ├── Webhook 服务开始监听（:8000）
 └── 轮询首次扫描
-    ├── skyland_sign → run() 执行签到 → 返回即完成（webhook_notify: false）
-    ├── maa          → run() no-op（MAA 已开机自启）→ 等待 POST /maa
-    └── maaend       → run() 启动 MAAEnd.exe → 等待 GET /maa
+    ├── skyland_sign → 调用 skyland_sign.skyland.start() → 返回即完成（done_on: entry）
+    ├── maa          → 无入口函数（MAA 已开机自启）→ 等待 POST /maa
+    └── maaend       → 调用 maaend.client.run() 启动 MAAEnd.exe → 等待 GET /maa
 
 MAA 跑完  → POST /maa       → maa 完成
 终末地跑完 → GET  /maa?msg= → maaend 完成
 
-全部完成 → Server酱推送报告（总用时）→ shutdown /s /t 60
+全部完成 → notify 报告写入 logs/notify-*.log → Server酱推送 → shutdown /s /t 60
 ```
+
+---
+
+## 日志结构
+
+```
+logs/
+├── 2026-03-21.log       # 主日志（调度、任务开始/结束、系统事件）
+└── notify-2026-03-21.log  # 通知日志（任务业务结果，用于 Server酱 推送）
+```
+
+主日志仅记录 `[notify] 报告已写入 → notify-*.log` 指针，通知内容不在控制台输出。
 
 ---
 
@@ -84,17 +96,12 @@ MAA 跑完  → POST /maa       → maa 完成
 
 1. 在 `tasks/` 下新建目录，例如 `tasks/my_task/`
 2. 创建 `tasks/my_task/__init__.py`（空文件）
-3. 创建 `tasks/my_task/client.py`，实现 `run()` 函数：
+3. 实现入口函数（文件名任意，不再强制要求 `client.py`）：
 
 ```python
-# 自完成（webhook_notify: false）：run() 返回即视为完成
-def run():
+# tasks/my_task/runner.py
+def start():
     do_something()
-
-# Webhook 完成（webhook_notify: true）：run() 只触发动作
-# 需要外部程序在完成后调用 POST /done 或对应的回调接口
-def run():
-    os.startfile(r"C:\path\to\app.exe")
 ```
 
 4. 在 `config.yaml` 注册任务：
@@ -104,8 +111,13 @@ tasks:
   my_task:
     enabled: true
     interval_hours: 24
-    webhook_notify: false  # true = 等待外部 webhook 回调才算完成
+    entry: "my_task.runner.start"   # tasks/ 内 module.function 路径
+    start_on: "entry"               # entry 执行时记录开始
+    done_on: "entry"                # entry 返回即完成
+    # done_on: "webhook"            # 如需等待外部回调，改为 webhook
 ```
+
+5. 如果任务需要 webhook 完成通知，在业务代码中发送对应请求，或在 `webhook/listener.py` 中添加专用路由。
 
 ---
 
@@ -117,23 +129,31 @@ system:
   webhook_port: 8000
   shutdown_on_complete: true      # 全部完成后自动关机
   shutdown_delay_seconds: 60      # 关机前等待秒数
-  shutdown_timeout_hours: 1.0     # 超时强制关机（小时）
+  shutdown_timeout_hours: 1.5     # 超时强制关机（小时）
   poll_interval_hours: 2.0        # 轮询间隔（测试时可设为 0.003 ≈ 10秒）
   server_chan_key: ""              # Server酱 SendKey，留空不推送
 
 tasks:
   skyland_sign:
     enabled: true
-    interval_hours: 10
-    webhook_notify: false  # run() 返回即完成
+    interval_hours: 20
+    entry: "skyland_sign.skyland.start"  # tasks/ 内的 module.function
+    start_on: "entry"    # entry 函数调用时记录开始；"run" = 轮询触发时记录
+    done_on: "entry"     # entry 返回即完成；"webhook" = 等待 webhook 回调
+
   maa:
     enabled: true
-    interval_hours: 1
-    webhook_notify: true   # 等待 POST /maa
+    interval_hours: 10
+    entry: ""            # 留空表示无 Python 入口（纯 webhook 驱动）
+    start_on: "run"
+    done_on: "webhook"
+
   maaend:
     enabled: true
-    interval_hours: 1
-    webhook_notify: true   # 等待 GET /maa
+    interval_hours: 10
+    entry: "maaend.client.run"
+    start_on: "entry"
+    done_on: "webhook"
 ```
 
 ## License
