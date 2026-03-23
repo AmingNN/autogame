@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import TYPE_CHECKING
 
@@ -62,8 +63,6 @@ def create_app(scheduler: "Scheduler") -> FastAPI:
             return {"status": "error", "message": f"未知任务: {task_name}"}
 
         mlog.info(f"Webhook 触发任务: {task_name} (force={force})")
-
-        import asyncio
         asyncio.create_task(scheduler.run_task(task_name, force=force))
         return {"status": "accepted", "task": task_name}
 

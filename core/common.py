@@ -21,8 +21,9 @@ class TaskConfig(BaseModel):
     # tasks/ 内的 module.function 路径，例如 "skyland_sign.skyland.start"
     # 留空表示无 Python 入口（纯 webhook 驱动任务，如 maa）
     entry: str = ""
-    # "entry"：entry 函数开始执行时记录任务开始
-    # "run"  ：轮询触发时即记录开始（entry 为空时自动使用此模式）
+    # 配置文档字段，描述该任务开始时机的语义（调度器不区分，仅供阅读）
+    # "entry"：entry 函数被调用时即为任务开始
+    # "run"  ：轮询触发时即为开始（entry 为空的任务，如 maa）
     start_on: Literal["entry", "run"] = "entry"
     # "entry"  ：entry 函数返回即视为完成
     # "webhook"：等待外部 webhook 回调才算完成
