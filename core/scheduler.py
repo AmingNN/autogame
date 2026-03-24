@@ -222,22 +222,27 @@ class Scheduler:
 
     # ── 轮询循环 ────────────────────────────────────────────────────────────
 
+    async def timeout_watchdog(self) -> None:
+        """独立超时监控协程，每 60 秒检查一次，不依赖轮询周期。
+        解决 poll_interval > shutdown_timeout 时超时检查无法及时触发的问题。
+        """
+        while not self._shutdown_triggered:
+            await asyncio.sleep(60)
+            if self._shutdown_triggered:
+                break
+            elapsed_hours = (
+                datetime.now(tz=timezone.utc) - self._start_time
+            ).total_seconds() / 3600
+            if elapsed_hours >= self.config.system.shutdown_timeout_hours:
+                pending = [k for k, v in self._session_done.items() if not v]
+                report(f"已运行 {elapsed_hours:.1f}h，监控超时，准备关机，未完成: {pending}")
+                self._trigger_shutdown()
+                break
+
     async def poll_loop(self) -> None:
         mlog.info("Scheduler 轮询已启动，等待任务触发或 Webhook 回调...")
-        while True:
-            if not self._shutdown_triggered:
-                elapsed_hours = (
-                    datetime.now(tz=timezone.utc) - self._start_time
-                ).total_seconds() / 3600
-                if elapsed_hours >= self.config.system.shutdown_timeout_hours:
-                    pending = [k for k, v in self._session_done.items() if not v]
-                    report(
-                        f"已运行 {elapsed_hours:.1f}h，监控超时，准备关机，未完成: {pending}"
-                    )
-                    self._trigger_shutdown()
-
+        while not self._shutdown_triggered:
             for task_name in self.config.tasks:
                 await self.run_task(task_name)
-
             interval_seconds = self.config.system.poll_interval_hours * 3600
             await asyncio.sleep(interval_seconds)

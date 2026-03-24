@@ -28,6 +28,7 @@ async def main() -> None:
     await asyncio.gather(
         server.serve(),
         scheduler.poll_loop(),
+        scheduler.timeout_watchdog(),
     )
 
 
